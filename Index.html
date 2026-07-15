@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Premium Particle Galaxy</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #050816;
+            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+            /* Subtly boost the canvas brightness for that premium Apple glow */
+            filter: brightness(1.1) contrast(1.1);
+        }
+    </style>
+</head>
+<body>
+    <canvas id="galaxy"></canvas>
+
+    <script>
+        const canvas = document.getElementById('galaxy');
+        // Disable alpha to optimize pure black/dark background rendering
+        const ctx = canvas.getContext('2d', { alpha: false });
+
+        let width, height, centerX, centerY, maxRadius;
+        let dpr = window.devicePixelRatio || 1;
+
+        // 100,000 particles constraint
+        const count = 100000;
+        
+        // Use Float32Arrays for maximum performance and memory efficiency
+        const x = new Float32Array(count);
+        const y = new Float32Array(count);
+        const vx = new Float32Array(count);
+        const vy = new Float32Array(count);
+        
+        // Store targets relative to center so resize works organically
+        const targetX = new Float32Array(count);
+        const targetY = new Float32Array(count);
+        
+        // Pre-calculate angular velocities (sin/cos per frame) for fast rotation
+        const cosA = new Float32Array(count);
+        const sinA = new Float32Array(count);
+        const sizes = new Float32Array(count);
+
+        let mouseX = -1000;
+        let mouseY = -1000;
+        let isMouseActive = false;
+
+        function resize() {
+            width = window.innerWidth;
+            height = window.innerHeight;
+            canvas.width = width * dpr;
+            canvas.height = height * dpr;
+            canvas.style.width = width + 'px';
+            canvas.style.height = height + 'px';
+            ctx.scale(dpr, dpr);
+            
+            centerX = width / 2;
+            centerY = height / 2;
+            maxRadius = Math.min(width, height) * 0.8;
+        }
+
+        window.addEventListener('resize', resize);
+        resize();
+
+        function init() {
+            for (let i = 0; i < count; i++) {
+                // Natural galaxy distribution: Supermassive core, inner disk, and outer arms
+                const rDist = Math.random();
+                let r;
+                if (rDist < 0.05) {
+                    r = Math.random() * maxRadius * 0.05; // Dense core
+                } else if (rDist < 0.2) {
+                    r = Math.random() * maxRadius * 0.2; // Inner disk
+                } else {
+                    r = Math.pow(Math.random(), 1.5) * maxRadius; // Outer disk
+                }
+
+                // Spiral shape generation
+                const arms = 4;
+                const baseAngle = Math.floor(Math.random() * arms) * (Math.PI * 2 / arms);
+                const twist = r * 0.005;
+                const scatter = (Math.random() - 0.5) * (Math.random() * 2.5);
+
+                const angle = baseAngle - twist + scatter;
+
+                targetX[i] = Math.cos(angle) * r;
+                targetY[i] = Math.sin(angle) * r;
+
+                x[i] = centerX + targetX[i];
+                y[i] = centerY + targetY[i];
+
+                vx[i] = 0;
+                vy[i] = 0;
+
+                // Keplerian-inspired orbital velocity (faster at center)
+                const speed = 0.0002 + 0.02 / Math.pow(r + 10, 1.2);
+                cosA[i] = Math.cos(speed);
+                sinA[i] = Math.sin(speed);
+
+                // Slight size variation for twinkling effect
+                sizes[i] = Math.random() > 0.9 ? 2 : 1;
+            }
+        }
+
+        init();
+
+        // High performance event listeners
+        window.addEventListener('mousemove', (e) => {
+            mouseX = e.clientX;
+            mouseY = e.clientY;
+            isMouseActive = true;
+        }, { passive: true });
+        
+        window.addEventListener('mouseleave', () => { isMouseActive = false; });
+        window.addEventListener('mouseout', () => { isMouseActive = false; });
+        
+        window.addEventListener('touchstart', (e) => {
+            mouseX = e.touches[0].clientX;
+            mouseY = e.touches[0].clientY;
+            isMouseActive = true;
+        }, { passive: true });
+        
+        window.addEventListener('touchmove', (e) => {
+            mouseX = e.touches[0].clientX;
+            mouseY = e.touches[0].clientY;
+            isMouseActive = true;
+        }, { passive: true });
+        
+        window.addEventListener('touchend', () => { isMouseActive = false; });
+
+        function render() {
+            // Draw space background
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.fillStyle = '#050816';
+            ctx.fillRect(0, 0, width, height);
+
+            // Enable additive blending for glowing bloom effect
+            ctx.globalCompositeOperation = 'lighter';
+
+            // Draw a subtle radial glow underneath the galaxy core
+            const gradient = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, maxRadius * 0.5);
+            gradient.addColorStop(0, 'rgba(0, 150, 255, 0.06)');
+            gradient.addColorStop(1, 'rgba(0, 150, 255, 0)');
+            ctx.fillStyle = gradient;
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, maxRadius * 0.5, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Set single fill style to batch draw 100k particles efficiently
+            ctx.fillStyle = 'rgba(0, 220, 255, 0.3)';
+            
+            const time = Date.now() * 0.0002;
+            const maxDist = 250;
+            const maxDistSq = maxDist * maxDist;
+
+            // Cache variables to avoid scope lookups inside the hot loop
+            const isMouse = isMouseActive;
+            const mx = mouseX;
+            const my = mouseY;
+            const cx = centerX;
+            const cy = centerY;
+
+            for (let i = 0; i < count; i++) {
+                // Apply rotation to target position using 2D rotation matrix
+                const txRel = targetX[i];
+                const tyRel = targetY[i];
+                const c = cosA[i];
+                const s = sinA[i];
+                
+                const newTxRel = txRel * c - tyRel * s;
+                const newTyRel = txRel * s + tyRel * c;
+                
+                targetX[i] = newTxRel;
+                targetY[i] = newTyRel;
+
+                const tx = cx + newTxRel;
+                const ty = cy + newTyRel;
+
+                let spring = 0.012; // Force returning particles to natural orbit
+
+                if (isMouse) {
+                    const dx = mx - x[i];
+                    const dy = my - y[i];
+                    const distSq = dx * dx + dy * dy;
+
+                    if (distSq < maxDistSq) {
+                        const dist = Math.sqrt(distSq) || 1;
+                        const influence = 1 - dist / maxDist;
+                        
+                        // Weaken the structural spring as cursor takes over
+                        spring *= (1 - influence); 
+
+                        // Gravity pull + Perpendicular orbit math
+                        const force = influence * 0.6;
+                        const orbit = influence * 1.8;
+
+                        const nx = dx / dist;
+                        const ny = dy / dist;
+
+                        vx[i] += nx * force - ny * orbit;
+                        vy[i] += ny * force + nx * orbit;
+                    }
+                }
+
+                // Add curl/turbulence for organic fluidity
+                vx[i] += Math.sin(x[i] * 0.01 + time) * 0.03;
+                vy[i] += Math.cos(y[i] * 0.01 + time) * 0.03;
+
+                // Apply structural spring force back to target orbit
+                vx[i] += (tx - x[i]) * spring;
+                vy[i] += (ty - y[i]) * spring;
+
+                // Friction / Damping
+                vx[i] *= 0.94;
+                vy[i] *= 0.94;
+
+                x[i] += vx[i];
+                y[i] += vy[i];
+
+                // Render
+                ctx.fillRect(x[i], y[i], sizes[i], sizes[i]);
+            }
+
+            requestAnimationFrame(render);
+        }
+
+        render();
+    </script>
+</body>
+</html>
